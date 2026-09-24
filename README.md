@@ -6,9 +6,10 @@
   <img src="assets/overview-image.jpeg" alt="Overview of appsettings-materialize">
 </picture>
 
-`appsettings-materialize` materializes a defined sequence of ASP.NET Core JSON configuration layers into one deterministic JSON file.
+`appsettings-materialize` turns a defined sequence of ASP.NET Core JSON configuration layers into one deterministic JSON file that matches .NET's configuration semantics.
 
-It uses `Microsoft.Extensions.Configuration.Json` as the source of truth. This is configuration-provider materialization, not a generic JSON merge tool.
+> [!IMPORTANT]
+> **This is .NET configuration materialization—not a generic JSON merge.** It uses `Microsoft.Extensions.Configuration.Json` as its source of truth and follows the standard provider order, precedence rules, and configuration-key semantics. The generated file matches the effective result of the selected JSON provider chain; it does not invent a separate merge strategy.
 
 ## Install
 
