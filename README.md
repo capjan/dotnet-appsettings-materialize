@@ -1,6 +1,12 @@
 # dotnet-appsettings-materialize
 
-<img src="assets/hero-materialize.png" alt="appsettings-materialize combines layered JSON configuration files into one effective configuration">
+> **Predictable ASP.NET Core deployments:** turn layered `appsettings` files into the one `appsettings.json` your published app runs.
+
+<img src="assets/hero-materialize.png" alt="Many ASP.NET Core configuration files are materialized into one appsettings.json and deployed to a running app">
+
+```bash
+dotnet tool install --global dotnet-appsettings-materialize
+```
 
 `appsettings-materialize` turns a defined sequence of ASP.NET Core JSON configuration layers into one deterministic, deployment-ready file, simplifying administration and removing ambiguity about which file contains the effective settings from that provider chain—all while preserving .NET's configuration semantics.
 
@@ -8,10 +14,6 @@
 > **The .NET-native advantage:** `appsettings-materialize` uses `Microsoft.Extensions.Configuration.Json` as its source of truth and computes the exact effective result of the selected ASP.NET Core JSON provider chain ahead of deployment. The server can then consume one deterministic file instead of resolving multiple JSON layers at runtime, while provider order, precedence rules, and configuration-key semantics remain unchanged.
 
 ## Install
-
-```bash
-dotnet tool install --global dotnet-appsettings-materialize --version 1.0.0
-```
 
 The installed command is `appsettings-materialize`.
 
