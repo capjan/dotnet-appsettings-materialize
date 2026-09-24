@@ -17,6 +17,7 @@ public sealed class ConfigurationMaterializer
 {
     private const string KeyDelimiter = ":";
     private const int MacExtendedAclType = 0x00000100;
+    private const int MacAclFirstEntry = 0;
     private const int ErrorNoEntry = 2;
     private const int LinuxErrorNoData = 61;
     private const int MacErrorNotSupported = 45;
@@ -713,6 +714,48 @@ public sealed class ConfigurationMaterializer
     }
 
     [SupportedOSPlatform("macos")]
+    private static void ClearMacAcl(string path)
+    {
+        if (MacAclDeleteFile(path, MacExtendedAclType) != 0)
+        {
+            var error = Marshal.GetLastPInvokeError();
+            if (error is not ErrorNoEntry and not MacErrorNotSupported and not MacErrorOperationNotSupported)
+            {
+                throw new IOException("Geerbte ACL-Einträge der temporären Ausgabedatei konnten nicht entfernt werden.", new Win32Exception(error));
+            }
+
+            var empty = MacAclInit(0);
+            if (empty == IntPtr.Zero)
+            {
+                throw new IOException("Geerbte ACL-Einträge der temporären Ausgabedatei konnten nicht entfernt werden.", new Win32Exception(Marshal.GetLastPInvokeError()));
+            }
+
+            try
+            {
+                if (MacAclSetFile(path, MacExtendedAclType, empty) != 0)
+                {
+                    throw new IOException("Geerbte ACL-Einträge der temporären Ausgabedatei konnten nicht entfernt werden.", new Win32Exception(Marshal.GetLastPInvokeError()));
+                }
+            }
+            finally
+            {
+                _ = MacAclFree(empty);
+            }
+        }
+
+        var remaining = MacAclGetFile(path, MacExtendedAclType);
+        if (remaining != IntPtr.Zero)
+        {
+            var hasEntry = MacAclGetEntry(remaining, MacAclFirstEntry, out _) == 0;
+            _ = MacAclFree(remaining);
+            if (hasEntry)
+            {
+                throw new IOException("Geerbte ACL-Einträge der temporären Ausgabedatei konnten nicht entfernt werden.");
+            }
+        }
+    }
+
+    [SupportedOSPlatform("macos")]
     private static void CopyMacAcl(string? sourceFile, string temporaryFile)
     {
         var acl = sourceFile is null
@@ -727,14 +770,7 @@ public sealed class ConfigurationMaterializer
                 throw new IOException("Die ACL der bestehenden Ausgabedatei konnte nicht gelesen werden.", new Win32Exception(error));
             }
 
-            if (MacAclDeleteFile(temporaryFile, MacExtendedAclType) != 0)
-            {
-                error = Marshal.GetLastPInvokeError();
-                if (error is not ErrorNoEntry and not MacErrorNotSupported and not MacErrorOperationNotSupported)
-                {
-                    throw new IOException("Geerbte ACL-Einträge der temporären Ausgabedatei konnten nicht entfernt werden.", new Win32Exception(error));
-                }
-            }
+            ClearMacAcl(temporaryFile);
 
             return;
         }
@@ -821,6 +857,12 @@ public sealed class ConfigurationMaterializer
 
     [DllImport("libSystem.B.dylib", EntryPoint = "acl_delete_file_np", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
     private static extern int MacAclDeleteFile([MarshalAs(UnmanagedType.LPUTF8Str)] string path, int type);
+
+    [DllImport("libSystem.B.dylib", EntryPoint = "acl_init", SetLastError = true)]
+    private static extern IntPtr MacAclInit(int count);
+
+    [DllImport("libSystem.B.dylib", EntryPoint = "acl_get_entry", SetLastError = true)]
+    private static extern int MacAclGetEntry(IntPtr acl, int entryId, out IntPtr entry);
 
     [DllImport("libSystem.B.dylib", EntryPoint = "acl_free", SetLastError = true)]
     private static extern int MacAclFree(IntPtr acl);

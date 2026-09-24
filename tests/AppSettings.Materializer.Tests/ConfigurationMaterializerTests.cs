@@ -340,6 +340,57 @@ public sealed class ConfigurationMaterializerTests
     }
 
     [Fact]
+    public void Materialize_does_not_inherit_macos_directory_acl_when_overwriting()
+    {
+        if (!OperatingSystem.IsMacOS())
+        {
+            return;
+        }
+
+        using var files = new TemporaryFiles();
+        var input = files.Write("input.json", "{ \"Value\": 1 }");
+        var output = files.Write("effective.json", "{ \"Value\": 99 }");
+        File.SetUnixFileMode(output, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        Assert.DoesNotContain("everyone", ListMacAcl(output), StringComparison.OrdinalIgnoreCase);
+
+        var directory = Path.GetDirectoryName(output)!;
+        using (var addAcl = Process.Start(new ProcessStartInfo("/bin/chmod")
+               {
+                   UseShellExecute = false,
+                   ArgumentList = { "+a", "everyone allow list,add_file,search,delete_child,file_inherit,directory_inherit", directory }
+               })!)
+        {
+            addAcl.WaitForExit();
+            Assert.Equal(0, addAcl.ExitCode);
+        }
+
+        new ConfigurationMaterializer().Materialize(
+            new MaterializerOptions
+            {
+                InputFiles = [input],
+                OutputFile = output,
+                Overwrite = true
+            });
+
+        Assert.DoesNotContain("everyone", ListMacAcl(output), StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(output));
+    }
+
+    private static string ListMacAcl(string path)
+    {
+        using var listAcl = Process.Start(new ProcessStartInfo("/bin/ls")
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            ArgumentList = { "-le", path }
+        })!;
+        var listing = listAcl.StandardOutput.ReadToEnd();
+        listAcl.WaitForExit();
+        Assert.Equal(0, listAcl.ExitCode);
+        return listing;
+    }
+
+    [Fact]
     public void Materialize_reports_missing_files_without_writing()
     {
         using var files = new TemporaryFiles();
