@@ -11,6 +11,9 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -22,10 +25,13 @@ jobs:
       - run: dotnet build AppSettings.Materializer.sln --configuration Release --no-restore
       - run: dotnet test AppSettings.Materializer.sln --configuration Release --no-build -m:1
       - run: dotnet pack src/AppSettings.Materializer.Cli/AppSettings.Materializer.Cli.csproj --configuration Release --no-build -p:Version="$VERSION" -o ./artifacts
+      - name: NuGet login (OIDC to temporary key)
+        uses: NuGet/login@v1
+        id: nuget-login
+        with:
+          user: capjan
       - name: Publish package to NuGet.org
-        env:
-          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
-        run: dotnet nuget push ./artifacts/*.nupkg --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
+        run: dotnet nuget push ./artifacts/*.nupkg --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" --source https://api.nuget.org/v3/index.json --skip-duplicate
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
