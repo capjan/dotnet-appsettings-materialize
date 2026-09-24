@@ -25,6 +25,33 @@ jobs:
       - run: dotnet build AppSettings.Materializer.sln --configuration Release --no-restore -p:Version="$VERSION"
       - run: dotnet test AppSettings.Materializer.sln --configuration Release --no-build -m:1
       - run: dotnet pack src/AppSettings.Materializer.Cli/AppSettings.Materializer.Cli.csproj --configuration Release --no-build -p:Version="$VERSION" -o ./artifacts
+      - name: Verify packaged assembly versions
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $package = Get-ChildItem ./artifacts/*.nupkg | Select-Object -First 1
+          $extractDirectory = Join-Path $env:RUNNER_TEMP ([guid]::NewGuid().ToString())
+          New-Item -ItemType Directory -Path $extractDirectory | Out-Null
+          unzip -q "$($package.FullName)" -d "$extractDirectory"
+
+          $assemblyFile = Get-ChildItem "$extractDirectory/tools" -Filter "AppSettings.Materializer.Cli.dll" -Recurse | Select-Object -First 1
+          if ($null -eq $assemblyFile) {
+            throw "Packaged CLI assembly was not found."
+          }
+
+          $assembly = [System.Reflection.Assembly]::LoadFile($assemblyFile.FullName)
+          $fileVersion = $assembly.GetCustomAttributes([System.Reflection.AssemblyFileVersionAttribute], $false)[0].Version
+          $informationalVersion = $assembly.GetCustomAttributes([System.Reflection.AssemblyInformationalVersionAttribute], $false)[0].InformationalVersion
+          $fileVersionBase = ($env:VERSION -split '[-+]')[0]
+          $expectedFileVersion = "$fileVersionBase.0"
+
+          if ($fileVersion -ne $expectedFileVersion) {
+            throw "Expected AssemblyFileVersion $expectedFileVersion, found $fileVersion."
+          }
+
+          if ($informationalVersion -ne $env:VERSION -and -not $informationalVersion.StartsWith($env:VERSION + "+", [System.StringComparison]::Ordinal)) {
+            throw "Expected AssemblyInformationalVersion to start with $env:VERSION, found $informationalVersion."
+          }
       - name: NuGet login (OIDC to temporary key)
         uses: NuGet/login@v1
         id: nuget-login
