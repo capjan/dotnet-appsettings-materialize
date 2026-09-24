@@ -275,11 +275,13 @@ public sealed class ConfigurationMaterializer
         {
             foreach (var pair in rawFile.Values)
             {
+                latestEmptyShapes.Remove(pair.Key);
                 latestRawValues[pair.Key] = pair.Value;
             }
 
             foreach (var pair in rawFile.EmptyShapes)
             {
+                latestRawValues.Remove(pair.Key);
                 latestEmptyShapes[pair.Key] = pair.Value;
             }
         }
