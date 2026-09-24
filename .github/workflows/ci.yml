@@ -35,6 +35,6 @@ jobs:
       - run: dotnet restore AppSettings.Materializer.sln
       - run: dotnet build AppSettings.Materializer.sln --configuration Release --no-restore
       - run: dotnet pack src/AppSettings.Materializer.Cli/AppSettings.Materializer.Cli.csproj --configuration Release --no-build -p:Version=1.0.0 -o ./artifacts
-      - run: dotnet tool install --global dotnet-appsettings-materialize --version 1.0.0 --add-source ./artifacts
+      - run: dotnet tool install --global dotnet-appsettings-materialize --version 1.0.0 --source ./artifacts
       - run: appsettings-materialize --help
-      - run: appsettings-materialize merge --directory ./samples/stage --environment Stage --output ./samples/expected/stage.effective.json
+      - run: appsettings-materialize merge --directory ./samples/stage --environment Stage --output ./artifacts/stage.effective.json
