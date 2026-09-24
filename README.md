@@ -2,7 +2,7 @@
 
 > **Predictable ASP.NET Core deployments:** turn layered `appsettings` files into the one `appsettings.json` your published app runs.
 
-<img src="assets/hero-materialize.png" alt="Many ASP.NET Core configuration files are materialized into one appsettings.json and deployed to a running app">
+<img src="assets/hero-materialize-deployment.png" alt="Many ASP.NET Core configuration files are materialized into one appsettings.json and deployed to a running app">
 
 ```bash
 dotnet tool install --global dotnet-appsettings-materialize
