@@ -90,6 +90,37 @@ public sealed class ConfigurationMaterializerTests
         Assert.Contains("Skalar-/Objektkonflikt", exception.Message, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("{ \"Section\": \"base\" }", "{ \"Section\": {} }", JsonValueKind.Object)]
+    [InlineData("{ \"Section\": \"base\" }", "{ \"Section\": [] }", JsonValueKind.Array)]
+    [InlineData("{ \"Section\": {} }", "{ \"Section\": \"override\" }", JsonValueKind.String)]
+    [InlineData("{ \"Section\": [] }", "{ \"Section\": \"override\" }", JsonValueKind.String)]
+    public void Materialize_roundtrips_latest_scalar_or_empty_shape_at_same_key(
+        string baseJson,
+        string overrideJson,
+        JsonValueKind expectedKind)
+    {
+        using var files = new TemporaryFiles();
+        var baseFile = files.Write("base.json", baseJson);
+        var overrideFile = files.Write("override.json", overrideJson);
+        var outputFile = files.PathFor("effective.json");
+
+        new ConfigurationMaterializer().Materialize(
+            new MaterializerOptions
+            {
+                InputFiles = [baseFile, overrideFile],
+                OutputFile = outputFile
+            });
+
+        var source = BuildConfiguration(baseFile, overrideFile);
+        var materialized = new ConfigurationBuilder()
+            .AddJsonFile(outputFile, optional: false, reloadOnChange: false)
+            .Build();
+
+        AssertConfigurationEqual(source, materialized);
+        Assert.Equal(expectedKind, ReadJson(outputFile).RootElement.GetProperty("Section").ValueKind);
+    }
+
     [Fact]
     public void Materialize_rejects_array_gaps()
     {
