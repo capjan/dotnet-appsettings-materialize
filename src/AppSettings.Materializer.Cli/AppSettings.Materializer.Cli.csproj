@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>AppSettings.Materializer.Cli</AssemblyName>
+    <RootNamespace>AppSettings.Materializer.Cli</RootNamespace>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>appsettings-materialize</ToolCommandName>
+    <PackageId>dotnet-appsettings-materialize</PackageId>
+    <VersionPrefix>1.0.0</VersionPrefix>
+    <Description>Materialize layered ASP.NET Core JSON configuration into one deterministic file.</Description>
+    <PackageTags>dotnet-tool;appsettings;configuration;aspnetcore;json;ci</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageLicenseFile>LICENSE</PackageLicenseFile>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    <IsPackable>true</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../AppSettings.Materializer/AppSettings.Materializer.csproj" />
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+    <None Include="../../LICENSE" Pack="true" PackagePath="/" />
+  </ItemGroup>
+</Project>
