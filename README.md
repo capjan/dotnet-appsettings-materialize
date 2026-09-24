@@ -9,7 +9,7 @@
 `appsettings-materialize` turns a defined sequence of ASP.NET Core JSON configuration layers into one deterministic, deployment-ready file, simplifying administration and removing ambiguity about which file contains the effective settings from that provider chain—all while preserving .NET's configuration semantics.
 
 > [!TIP]
-> **The .NET-native advantage:** `appsettings-materialize` uses `Microsoft.Extensions.Configuration.Json` as its source of truth. The generated file matches the effective result of the selected ASP.NET Core provider chain—including provider order, precedence rules, and configuration-key semantics—so local builds and deployed configuration stay in sync.
+> **The .NET-native advantage:** `appsettings-materialize` uses `Microsoft.Extensions.Configuration.Json` as its source of truth and computes the exact effective result of the selected ASP.NET Core JSON provider chain ahead of deployment. The server can then consume one deterministic file instead of resolving multiple JSON layers at runtime, while provider order, precedence rules, and configuration-key semantics remain unchanged.
 
 ## Install
 
