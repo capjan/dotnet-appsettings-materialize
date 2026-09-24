@@ -22,7 +22,10 @@ public sealed class ConfigurationMaterializer
     private const int MacErrorNotSupported = 45;
     private const int MacErrorOperationNotSupported = 102;
     private const int LinuxErrorNotSupported = 95;
+    private const int ErrorAlreadyExists = 17;
+    private const uint PrivateUnixDirectoryMode = (uint)(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
     private const string LinuxAclAttribute = "system.posix_acl_access";
+    private const string LinuxDefaultAclAttribute = "system.posix_acl_default";
 
     /// <summary>
     /// Lädt die Eingabelayer, rekonstruiert die effektive Hierarchie und validiert den Roundtrip.
@@ -494,42 +497,56 @@ public sealed class ConfigurationMaterializer
             throw new MaterializerException("Das Zielverzeichnis der Ausgabedatei existiert nicht.");
         }
 
-        if (!overwrite && File.Exists(outputFile))
+        var outputExists = File.Exists(outputFile);
+        if (!overwrite && outputExists)
         {
             throw new MaterializerException("Die Ausgabedatei existiert bereits. Verwende --overwrite, um sie zu ersetzen.");
         }
 
-        var temporaryFile = Path.Combine(directory, $".{Path.GetFileName(outputFile)}.{Guid.NewGuid():N}.tmp");
-        var unixMode = GetTemporaryUnixMode(outputFile);
+        var temporaryDirectory = directory;
+        var temporaryFile = string.Empty;
+        var unixMode = GetTemporaryUnixMode(outputFile, outputExists);
         var windowsSecurity = OperatingSystem.IsWindows()
             ? GetTemporaryWindowsSecurity(outputFile)
             : null;
 
         try
         {
-            using (var stream = CreateTemporaryFile(temporaryFile, unixMode, windowsSecurity))
+            if (OperatingSystem.IsMacOS() || OperatingSystem.IsLinux())
             {
-                if (!OperatingSystem.IsWindows() && unixMode is { } mode)
-                {
-                    File.SetUnixFileMode(stream.SafeFileHandle, mode);
-                }
+                temporaryDirectory = CreatePrivateUnixTemporaryDirectory(directory);
+            }
 
-                if (OperatingSystem.IsMacOS())
+            var temporaryFileName = OperatingSystem.IsMacOS() || OperatingSystem.IsLinux()
+                ? Path.GetFileName(outputFile)
+                : $".{Path.GetFileName(outputFile)}.{Guid.NewGuid():N}.tmp";
+            temporaryFile = Path.Combine(temporaryDirectory, temporaryFileName);
+
+            using (var stream = CreateTemporaryFile(temporaryFile, windowsSecurity))
+            {
+                if (!OperatingSystem.IsWindows())
                 {
-                    CopyMacAcl(File.Exists(outputFile) ? outputFile : null, temporaryFile);
-                }
-                else if (OperatingSystem.IsLinux())
-                {
-                    CopyLinuxAcl(File.Exists(outputFile) ? outputFile : null, temporaryFile);
+                    File.SetUnixFileMode(stream.SafeFileHandle, UnixFileMode.UserRead | UnixFileMode.UserWrite);
                 }
 
                 stream.Write(content);
                 stream.Flush(flushToDisk: true);
 
+                if (outputExists && OperatingSystem.IsMacOS())
+                {
+                    CopyMacAcl(outputFile, temporaryFile);
+                }
+                else if (outputExists && OperatingSystem.IsLinux())
+                {
+                    CopyLinuxAcl(outputFile, temporaryFile);
+                }
+
                 if (!OperatingSystem.IsWindows() && unixMode is { } finalMode)
                 {
                     File.SetUnixFileMode(stream.SafeFileHandle, finalMode);
                 }
+
+                stream.Flush(flushToDisk: true);
             }
 
             if (OperatingSystem.IsWindows() && File.Exists(outputFile))
@@ -547,28 +564,32 @@ public sealed class ConfigurationMaterializer
         }
         finally
         {
-            if (File.Exists(temporaryFile))
+            if (!string.IsNullOrEmpty(temporaryFile) && File.Exists(temporaryFile))
             {
                 File.Delete(temporaryFile);
+            }
+
+            if (!OperatingSystem.IsWindows() && temporaryDirectory != directory && Directory.Exists(temporaryDirectory))
+            {
+                Directory.Delete(temporaryDirectory);
             }
         }
     }
 
-    private static UnixFileMode? GetTemporaryUnixMode(string outputFile)
+    private static UnixFileMode? GetTemporaryUnixMode(string outputFile, bool outputExists)
     {
         if (OperatingSystem.IsWindows())
         {
             return null;
         }
 
-        return File.Exists(outputFile)
+        return outputExists
             ? File.GetUnixFileMode(outputFile)
             : UnixFileMode.UserRead | UnixFileMode.UserWrite;
     }
 
     private static FileStream CreateTemporaryFile(
         string path,
-        UnixFileMode? unixMode,
         FileSecurity? windowsSecurity)
     {
         if (OperatingSystem.IsWindows())
@@ -583,10 +604,65 @@ public sealed class ConfigurationMaterializer
             Share = FileShare.None,
             BufferSize = 4096,
             Options = FileOptions.SequentialScan,
-            UnixCreateMode = unixMode
+            UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite
         };
 
         return new FileStream(path, options);
+    }
+
+    [UnsupportedOSPlatform("windows")]
+    private static string CreatePrivateUnixTemporaryDirectory(string parentDirectory)
+    {
+        while (true)
+        {
+            var path = Path.Combine(parentDirectory, $".appsettings-materializer-{Guid.NewGuid():N}.tmp");
+            int result;
+            if (OperatingSystem.IsMacOS())
+            {
+                result = MacCreateDirectory(path, PrivateUnixDirectoryMode);
+            }
+            else if (OperatingSystem.IsLinux())
+            {
+                result = LinuxCreateDirectory(path, PrivateUnixDirectoryMode);
+            }
+            else
+            {
+                throw new PlatformNotSupportedException("Private temporäre Verzeichnisse werden auf dieser Plattform nicht unterstützt.");
+            }
+
+            if (result != 0)
+            {
+                var error = Marshal.GetLastPInvokeError();
+                if (error == ErrorAlreadyExists)
+                {
+                    continue;
+                }
+
+                throw new IOException("Ein privates temporäres Verzeichnis konnte nicht erstellt werden.", new Win32Exception(error));
+            }
+
+            try
+            {
+                File.SetUnixFileMode(path, (UnixFileMode)PrivateUnixDirectoryMode);
+                if (OperatingSystem.IsMacOS())
+                {
+                    CopyMacAcl(null, path);
+                }
+                else if (OperatingSystem.IsLinux())
+                {
+                    CopyLinuxAcl(null, path);
+                    RemoveLinuxAcl(path, LinuxDefaultAclAttribute);
+                }
+
+                File.SetUnixFileMode(path, (UnixFileMode)PrivateUnixDirectoryMode);
+                return path;
+            }
+            catch
+            {
+                Directory.Delete(path);
+                throw;
+            }
+        }
     }
 
     private static FileSecurity? GetTemporaryWindowsSecurity(string outputFile)
@@ -728,6 +804,14 @@ public sealed class ConfigurationMaterializer
             }
         }
     }
+
+    [SupportedOSPlatform("macos")]
+    [DllImport("libSystem.B.dylib", EntryPoint = "mkdir", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
+    private static extern int MacCreateDirectory([MarshalAs(UnmanagedType.LPUTF8Str)] string path, uint mode);
+
+    [SupportedOSPlatform("linux")]
+    [DllImport("libc", EntryPoint = "mkdir", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
+    private static extern int LinuxCreateDirectory([MarshalAs(UnmanagedType.LPUTF8Str)] string path, uint mode);
 
     [DllImport("libSystem.B.dylib", EntryPoint = "acl_get_file", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
     private static extern IntPtr MacAclGetFile([MarshalAs(UnmanagedType.LPUTF8Str)] string path, int type);

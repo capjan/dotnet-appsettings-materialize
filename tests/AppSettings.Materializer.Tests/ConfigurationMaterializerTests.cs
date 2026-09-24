@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using AppSettings.Materializer;
 using Microsoft.Extensions.Configuration;
@@ -8,6 +9,8 @@ namespace AppSettings.Materializer.Tests;
 
 public sealed class ConfigurationMaterializerTests
 {
+    private const string LinuxAclAttribute = "system.posix_acl_access";
+
     [Fact]
     public void Materialize_preserves_configuration_values_and_array_inheritance()
     {
@@ -239,6 +242,39 @@ public sealed class ConfigurationMaterializerTests
     }
 
     [Fact]
+    public void Materialize_preserves_linux_acl_when_group_access_is_narrower_than_mode()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        using var files = new TemporaryFiles();
+        var input = files.Write("input.json", "{ \"Value\": 1 }");
+        var output = files.Write("effective.json", "{ \"Value\": 99 }");
+        var expectedMode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead;
+        File.SetUnixFileMode(output, expectedMode);
+        var expectedAcl = CreateLinuxAcl(
+            (0x01, 0x06, uint.MaxValue),
+            (0x04, 0x00, uint.MaxValue),
+            (0x10, 0x04, uint.MaxValue),
+            (0x20, 0x00, uint.MaxValue));
+        Assert.Equal(0, LinuxSetXAttr(output, LinuxAclAttribute, expectedAcl, (nuint)expectedAcl.Length, 0));
+        Assert.Equal(expectedMode, File.GetUnixFileMode(output));
+
+        new ConfigurationMaterializer().Materialize(
+            new MaterializerOptions
+            {
+                InputFiles = [input],
+                OutputFile = output,
+                Overwrite = true
+            });
+
+        Assert.Equal(expectedMode, File.GetUnixFileMode(output));
+        Assert.Equal(expectedAcl, ReadLinuxAcl(output));
+    }
+
+    [Fact]
     public void Materialize_creates_new_unix_output_as_owner_only()
     {
         if (OperatingSystem.IsWindows())
@@ -383,6 +419,52 @@ public sealed class ConfigurationMaterializerTests
     {
         return JsonDocument.Parse(File.ReadAllText(path));
     }
+
+    private static byte[] CreateLinuxAcl(params (ushort Tag, ushort Permissions, uint Id)[] entries)
+    {
+        var acl = new byte[4 + entries.Length * 8];
+        BitConverter.TryWriteBytes(acl.AsSpan(0, 4), 2u);
+        for (var index = 0; index < entries.Length; index++)
+        {
+            var offset = 4 + index * 8;
+            BitConverter.TryWriteBytes(acl.AsSpan(offset, 2), entries[index].Tag);
+            BitConverter.TryWriteBytes(acl.AsSpan(offset + 2, 2), entries[index].Permissions);
+            BitConverter.TryWriteBytes(acl.AsSpan(offset + 4, 4), entries[index].Id);
+        }
+
+        return acl;
+    }
+
+    private static byte[] ReadLinuxAcl(string path)
+    {
+        var size = LinuxGetXAttr(path, LinuxAclAttribute, IntPtr.Zero, 0);
+        Assert.True(size > 0, $"Die POSIX-ACL konnte nicht gelesen werden: errno {Marshal.GetLastPInvokeError()}.");
+        var acl = new byte[checked((int)size)];
+        Assert.Equal((nint)acl.Length, LinuxGetXAttr(path, LinuxAclAttribute, acl, (nuint)acl.Length));
+        return acl;
+    }
+
+    [DllImport("libc", EntryPoint = "setxattr", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
+    private static extern int LinuxSetXAttr(
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string path,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string name,
+        [In] byte[] value,
+        nuint size,
+        int flags);
+
+    [DllImport("libc", EntryPoint = "getxattr", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
+    private static extern nint LinuxGetXAttr(
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string path,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string name,
+        IntPtr value,
+        nuint size);
+
+    [DllImport("libc", EntryPoint = "getxattr", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
+    private static extern nint LinuxGetXAttr(
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string path,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string name,
+        [Out] byte[] value,
+        nuint size);
 
     private sealed class TemporaryFiles : IDisposable
     {
