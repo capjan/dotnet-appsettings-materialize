@@ -163,10 +163,7 @@ public sealed class ConfigurationMaterializer
 
         foreach (var entry in configuration.AsEnumerable(true))
         {
-            if (!string.IsNullOrEmpty(entry.Key))
-            {
-                entries.Add(new ConfigurationEntry(entry.Key, entry.Value));
-            }
+            entries.Add(new ConfigurationEntry(entry.Key, entry.Value));
         }
 
         return entries;
@@ -483,10 +480,7 @@ public sealed class ConfigurationMaterializer
         var result = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         foreach (var entry in configuration.AsEnumerable(true))
         {
-            if (!string.IsNullOrEmpty(entry.Key))
-            {
-                result[entry.Key] = entry.Value;
-            }
+            result[entry.Key] = entry.Value;
         }
 
         return result;

@@ -159,6 +159,25 @@ public sealed class ConfigurationMaterializerTests
     }
 
     [Fact]
+    public void Materialize_preserves_empty_root_configuration_key()
+    {
+        using var files = new TemporaryFiles();
+        var input = files.Write("input.json", "{ \"\": \"value\" }");
+        var outputFile = files.PathFor("effective.json");
+
+        var result = new ConfigurationMaterializer().Materialize(
+            new MaterializerOptions
+            {
+                InputFiles = [input],
+                OutputFile = outputFile
+            });
+
+        Assert.Equal(1, result.EffectiveKeyCount);
+        Assert.Equal("value", new ConfigurationBuilder().AddJsonFile(outputFile).Build()[""]);
+        Assert.Equal("value", ReadJson(outputFile).RootElement.GetProperty("").GetString());
+    }
+
+    [Fact]
     public void Materialize_check_only_does_not_write_and_returns_hash()
     {
         using var files = new TemporaryFiles();
