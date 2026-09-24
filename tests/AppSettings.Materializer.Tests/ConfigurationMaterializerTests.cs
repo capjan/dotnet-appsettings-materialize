@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using AppSettings.Materializer;
 using Microsoft.Extensions.Configuration;
@@ -191,6 +192,96 @@ public sealed class ConfigurationMaterializerTests
                 OutputFile = output
             }));
         Assert.Equal("{ \"Value\": 99 }", File.ReadAllText(output));
+    }
+
+    [Fact]
+    public void Materialize_preserves_existing_unix_mode_when_overwriting()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var files = new TemporaryFiles();
+        var input = files.Write("input.json", "{ \"Value\": 1 }");
+        var output = files.Write("effective.json", "{ \"Value\": 99 }");
+        var expectedMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        File.SetUnixFileMode(output, expectedMode);
+
+        new ConfigurationMaterializer().Materialize(
+            new MaterializerOptions
+            {
+                InputFiles = [input],
+                OutputFile = output,
+                Overwrite = true
+            });
+
+        Assert.Equal(expectedMode, File.GetUnixFileMode(output));
+    }
+
+    [Fact]
+    public void Materialize_creates_new_unix_output_as_owner_only()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var files = new TemporaryFiles();
+        var input = files.Write("input.json", "{ \"Value\": 1 }");
+        var output = files.PathFor("effective.json");
+
+        new ConfigurationMaterializer().Materialize(
+            new MaterializerOptions
+            {
+                InputFiles = [input],
+                OutputFile = output
+            });
+
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(output));
+    }
+
+    [Fact]
+    public void Materialize_preserves_existing_macos_acl_when_overwriting()
+    {
+        if (!OperatingSystem.IsMacOS())
+        {
+            return;
+        }
+
+        using var files = new TemporaryFiles();
+        var input = files.Write("input.json", "{ \"Value\": 1 }");
+        var output = files.Write("effective.json", "{ \"Value\": 99 }");
+        File.SetUnixFileMode(output, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+
+        using (var addAcl = Process.Start(new ProcessStartInfo("/bin/chmod")
+               {
+                   UseShellExecute = false,
+                   ArgumentList = { "+a", "everyone allow read", output }
+               })!)
+        {
+            addAcl.WaitForExit();
+            Assert.Equal(0, addAcl.ExitCode);
+        }
+
+        new ConfigurationMaterializer().Materialize(
+            new MaterializerOptions
+            {
+                InputFiles = [input],
+                OutputFile = output,
+                Overwrite = true
+            });
+
+        using var listAcl = Process.Start(new ProcessStartInfo("/bin/ls")
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            ArgumentList = { "-le", output }
+        })!;
+        var listing = listAcl.StandardOutput.ReadToEnd();
+        listAcl.WaitForExit();
+        Assert.Equal(0, listAcl.ExitCode);
+        Assert.Contains("everyone allow read", listing, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

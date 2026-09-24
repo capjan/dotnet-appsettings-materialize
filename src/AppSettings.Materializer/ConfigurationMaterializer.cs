@@ -1,5 +1,10 @@
+using System.ComponentModel;
 using System.Globalization;
+using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
+using System.Security.AccessControl;
 using System.Security.Cryptography;
+using System.Security.Principal;
 using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 
@@ -11,6 +16,13 @@ namespace AppSettings.Materializer;
 public sealed class ConfigurationMaterializer
 {
     private const string KeyDelimiter = ":";
+    private const int MacExtendedAclType = 0x00000100;
+    private const int ErrorNoEntry = 2;
+    private const int LinuxErrorNoData = 61;
+    private const int MacErrorNotSupported = 45;
+    private const int MacErrorOperationNotSupported = 102;
+    private const int LinuxErrorNotSupported = 95;
+    private const string LinuxAclAttribute = "system.posix_acl_access";
 
     /// <summary>
     /// Lädt die Eingabelayer, rekonstruiert die effektive Hierarchie und validiert den Roundtrip.
@@ -494,21 +506,46 @@ public sealed class ConfigurationMaterializer
         }
 
         var temporaryFile = Path.Combine(directory, $".{Path.GetFileName(outputFile)}.{Guid.NewGuid():N}.tmp");
+        var unixMode = GetTemporaryUnixMode(outputFile);
+        var windowsSecurity = OperatingSystem.IsWindows()
+            ? GetTemporaryWindowsSecurity(outputFile)
+            : null;
+
         try
         {
-            using (var stream = new FileStream(
-                       temporaryFile,
-                       FileMode.CreateNew,
-                       FileAccess.Write,
-                       FileShare.None,
-                       bufferSize: 4096,
-                       options: FileOptions.SequentialScan))
+            using (var stream = CreateTemporaryFile(temporaryFile, unixMode, windowsSecurity))
             {
+                if (!OperatingSystem.IsWindows() && unixMode is { } mode)
+                {
+                    File.SetUnixFileMode(stream.SafeFileHandle, mode);
+                }
+
+                if (OperatingSystem.IsMacOS())
+                {
+                    CopyMacAcl(File.Exists(outputFile) ? outputFile : null, temporaryFile);
+                }
+                else if (OperatingSystem.IsLinux())
+                {
+                    CopyLinuxAcl(File.Exists(outputFile) ? outputFile : null, temporaryFile);
+                }
+
                 stream.Write(content);
                 stream.Flush(flushToDisk: true);
+
+                if (!OperatingSystem.IsWindows() && unixMode is { } finalMode)
+                {
+                    File.SetUnixFileMode(stream.SafeFileHandle, finalMode);
+                }
             }
 
-            File.Move(temporaryFile, outputFile, overwrite);
+            if (OperatingSystem.IsWindows() && File.Exists(outputFile))
+            {
+                File.Replace(temporaryFile, outputFile, destinationBackupFileName: null);
+            }
+            else
+            {
+                File.Move(temporaryFile, outputFile, overwrite);
+            }
         }
         catch (IOException exception)
         {
@@ -522,6 +559,220 @@ public sealed class ConfigurationMaterializer
             }
         }
     }
+
+    private static UnixFileMode? GetTemporaryUnixMode(string outputFile)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return null;
+        }
+
+        return File.Exists(outputFile)
+            ? File.GetUnixFileMode(outputFile)
+            : UnixFileMode.UserRead | UnixFileMode.UserWrite;
+    }
+
+    private static FileStream CreateTemporaryFile(
+        string path,
+        UnixFileMode? unixMode,
+        FileSecurity? windowsSecurity)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return CreateWindowsTemporaryFile(path, windowsSecurity!);
+        }
+
+        var options = new FileStreamOptions
+        {
+            Mode = FileMode.CreateNew,
+            Access = FileAccess.Write,
+            Share = FileShare.None,
+            BufferSize = 4096,
+            Options = FileOptions.SequentialScan,
+            UnixCreateMode = unixMode
+        };
+
+        return new FileStream(path, options);
+    }
+
+    private static FileSecurity? GetTemporaryWindowsSecurity(string outputFile)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return null;
+        }
+
+        return GetWindowsFileSecurity(outputFile);
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static FileSecurity GetWindowsFileSecurity(string outputFile)
+    {
+        if (File.Exists(outputFile))
+        {
+            return new FileInfo(outputFile).GetAccessControl(AccessControlSections.Access);
+        }
+
+        var security = new FileSecurity();
+        security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+        security.AddAccessRule(new FileSystemAccessRule(
+            WindowsIdentity.GetCurrent().User!,
+            FileSystemRights.FullControl,
+            AccessControlType.Allow));
+        security.AddAccessRule(new FileSystemAccessRule(
+            new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
+            FileSystemRights.FullControl,
+            AccessControlType.Allow));
+        security.AddAccessRule(new FileSystemAccessRule(
+            new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null),
+            FileSystemRights.FullControl,
+            AccessControlType.Allow));
+        return security;
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static FileStream CreateWindowsTemporaryFile(string path, FileSecurity security)
+    {
+        return new FileInfo(path).Create(
+            FileMode.CreateNew,
+            FileSystemRights.Write,
+            FileShare.None,
+            bufferSize: 4096,
+            options: FileOptions.SequentialScan,
+            fileSecurity: security);
+    }
+
+    [SupportedOSPlatform("macos")]
+    private static void CopyMacAcl(string? sourceFile, string temporaryFile)
+    {
+        var acl = sourceFile is null
+            ? IntPtr.Zero
+            : MacAclGetFile(sourceFile, MacExtendedAclType);
+
+        if (acl == IntPtr.Zero)
+        {
+            var error = sourceFile is null ? 0 : Marshal.GetLastPInvokeError();
+            if (error is not 0 and not ErrorNoEntry and not MacErrorNotSupported and not MacErrorOperationNotSupported)
+            {
+                throw new IOException("Die ACL der bestehenden Ausgabedatei konnte nicht gelesen werden.", new Win32Exception(error));
+            }
+
+            if (MacAclDeleteFile(temporaryFile, MacExtendedAclType) != 0)
+            {
+                error = Marshal.GetLastPInvokeError();
+                if (error is not ErrorNoEntry and not MacErrorNotSupported and not MacErrorOperationNotSupported)
+                {
+                    throw new IOException("Geerbte ACL-Einträge der temporären Ausgabedatei konnten nicht entfernt werden.", new Win32Exception(error));
+                }
+            }
+
+            return;
+        }
+
+        try
+        {
+            if (MacAclSetFile(temporaryFile, MacExtendedAclType, acl) != 0)
+            {
+                throw new IOException("Die ACL der bestehenden Ausgabedatei konnte nicht übernommen werden.", new Win32Exception(Marshal.GetLastPInvokeError()));
+            }
+        }
+        finally
+        {
+            _ = MacAclFree(acl);
+        }
+    }
+
+    [SupportedOSPlatform("linux")]
+    private static void CopyLinuxAcl(string? sourceFile, string temporaryFile)
+    {
+        if (sourceFile is null)
+        {
+            RemoveLinuxAcl(temporaryFile, LinuxAclAttribute);
+            return;
+        }
+
+        var size = LinuxGetXAttr(sourceFile, LinuxAclAttribute, IntPtr.Zero, 0);
+        if (size < 0)
+        {
+            var error = Marshal.GetLastPInvokeError();
+            if (error is LinuxErrorNoData or LinuxErrorNotSupported)
+            {
+                RemoveLinuxAcl(temporaryFile, LinuxAclAttribute);
+                return;
+            }
+
+            throw new IOException("Die ACL der bestehenden Ausgabedatei konnte nicht gelesen werden.", new Win32Exception(error));
+        }
+
+        var acl = new byte[checked((int)size)];
+        var bytesRead = LinuxGetXAttr(sourceFile, LinuxAclAttribute, acl, (nuint)acl.Length);
+        if (bytesRead < 0)
+        {
+            throw new IOException("Die ACL der bestehenden Ausgabedatei konnte nicht gelesen werden.", new Win32Exception(Marshal.GetLastPInvokeError()));
+        }
+
+        if (bytesRead != size)
+        {
+            Array.Resize(ref acl, checked((int)bytesRead));
+        }
+
+        if (LinuxSetXAttr(temporaryFile, LinuxAclAttribute, acl, (nuint)acl.Length, 0) != 0)
+        {
+            throw new IOException("Die ACL der bestehenden Ausgabedatei konnte nicht übernommen werden.", new Win32Exception(Marshal.GetLastPInvokeError()));
+        }
+    }
+
+    [SupportedOSPlatform("linux")]
+    private static void RemoveLinuxAcl(string path, string aclAttribute)
+    {
+        if (LinuxRemoveXAttr(path, aclAttribute) != 0)
+        {
+            var error = Marshal.GetLastPInvokeError();
+            if (error is not LinuxErrorNoData and not LinuxErrorNotSupported)
+            {
+                throw new IOException("Geerbte ACL-Einträge der temporären Ausgabedatei konnten nicht entfernt werden.", new Win32Exception(error));
+            }
+        }
+    }
+
+    [DllImport("libSystem.B.dylib", EntryPoint = "acl_get_file", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
+    private static extern IntPtr MacAclGetFile([MarshalAs(UnmanagedType.LPUTF8Str)] string path, int type);
+
+    [DllImport("libSystem.B.dylib", EntryPoint = "acl_set_file", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
+    private static extern int MacAclSetFile([MarshalAs(UnmanagedType.LPUTF8Str)] string path, int type, IntPtr acl);
+
+    [DllImport("libSystem.B.dylib", EntryPoint = "acl_delete_file_np", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
+    private static extern int MacAclDeleteFile([MarshalAs(UnmanagedType.LPUTF8Str)] string path, int type);
+
+    [DllImport("libSystem.B.dylib", EntryPoint = "acl_free", SetLastError = true)]
+    private static extern int MacAclFree(IntPtr acl);
+
+    [DllImport("libc", EntryPoint = "getxattr", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
+    private static extern nint LinuxGetXAttr(
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string path,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string name,
+        IntPtr value,
+        nuint size);
+
+    [DllImport("libc", EntryPoint = "getxattr", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
+    private static extern nint LinuxGetXAttr(
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string path,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string name,
+        [Out] byte[] value,
+        nuint size);
+
+    [DllImport("libc", EntryPoint = "setxattr", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
+    private static extern int LinuxSetXAttr(
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string path,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string name,
+        [In] byte[] value,
+        nuint size,
+        int flags);
+
+    [DllImport("libc", EntryPoint = "removexattr", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
+    private static extern int LinuxRemoveXAttr(
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string path,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string name);
 
     private static string Combine(string? prefix, string segment)
     {
