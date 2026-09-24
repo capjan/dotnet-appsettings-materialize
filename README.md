@@ -1,10 +1,6 @@
 # dotnet-appsettings-materialize
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/overview-image-dark.png">
-  <source media="(prefers-color-scheme: light)" srcset="assets/overview-image.jpeg">
-  <img src="assets/overview-image.jpeg" alt="Overview of appsettings-materialize">
-</picture>
+<img src="assets/hero-materialize.png" alt="appsettings-materialize combines layered JSON configuration files into one effective configuration">
 
 `appsettings-materialize` turns a defined sequence of ASP.NET Core JSON configuration layers into one deterministic, deployment-ready file, simplifying administration and removing ambiguity about which file contains the effective settings from that provider chain—all while preserving .NET's configuration semantics.
 
