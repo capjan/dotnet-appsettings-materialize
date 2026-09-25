@@ -15,6 +15,8 @@ namespace AppSettings.Materializer;
 /// </summary>
 public sealed class ConfigurationMaterializer
 {
+    private readonly Action? beforeAtomicMove;
+
     private const string KeyDelimiter = ":";
     private const int MacExtendedAclType = 0x00000100;
     private const int MacAclFirstEntry = 0;
@@ -28,6 +30,19 @@ public sealed class ConfigurationMaterializer
     private const uint PrivateUnixDirectoryMode = (uint)(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
     private const string LinuxAclAttribute = "system.posix_acl_access";
     private const string LinuxDefaultAclAttribute = "system.posix_acl_default";
+
+    /// <summary>
+    /// Erstellt einen Materializer für atomare Konfigurationsausgaben.
+    /// </summary>
+    public ConfigurationMaterializer()
+    {
+    }
+
+    internal ConfigurationMaterializer(Action beforeAtomicMove)
+    {
+        ArgumentNullException.ThrowIfNull(beforeAtomicMove);
+        this.beforeAtomicMove = beforeAtomicMove;
+    }
 
     /// <summary>
     /// Lädt die Eingabelayer, rekonstruiert die effektive Hierarchie und validiert den Roundtrip.
@@ -56,7 +71,7 @@ public sealed class ConfigurationMaterializer
 
         if (!options.CheckOnly)
         {
-            WriteAtomically(outputFile, outputBytes, options.Overwrite);
+            WriteAtomically(outputFile, outputBytes, options.Overwrite, beforeAtomicMove);
             ValidateRoundtripFile(configuration, outputFile);
         }
 
@@ -491,7 +506,7 @@ public sealed class ConfigurationMaterializer
         return result;
     }
 
-    private static void WriteAtomically(string outputFile, byte[] content, bool overwrite)
+    private static void WriteAtomically(string outputFile, byte[] content, bool overwrite, Action? beforeAtomicMove)
     {
         var directory = Path.GetDirectoryName(outputFile);
         if (string.IsNullOrEmpty(directory) || !Directory.Exists(directory))
@@ -551,13 +566,25 @@ public sealed class ConfigurationMaterializer
                 stream.Flush(flushToDisk: true);
             }
 
-            if (OperatingSystem.IsWindows() && File.Exists(outputFile))
+            try
             {
-                File.Replace(temporaryFile, outputFile, destinationBackupFileName: null);
+                beforeAtomicMove?.Invoke();
+
+                if (OperatingSystem.IsWindows() && overwrite && File.Exists(outputFile))
+                {
+                    File.Replace(temporaryFile, outputFile, destinationBackupFileName: null);
+                }
+                else
+                {
+                    // File.Replace is reserved for an existing destination when
+                    // overwrite is true. Other cases use File.Move with the caller's
+                    // overwrite flag; when false, it atomically fails if the target exists.
+                    File.Move(temporaryFile, outputFile, overwrite);
+                }
             }
-            else
+            catch (IOException exception) when (!overwrite && File.Exists(outputFile))
             {
-                File.Move(temporaryFile, outputFile, overwrite);
+                throw new MaterializerException("Die Ausgabedatei existiert bereits. Verwende --overwrite, um sie zu ersetzen.", exception);
             }
         }
         catch (IOException exception)

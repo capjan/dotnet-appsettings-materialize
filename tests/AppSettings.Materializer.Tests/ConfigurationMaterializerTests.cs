@@ -221,6 +221,68 @@ public sealed class ConfigurationMaterializerTests
     }
 
     [Fact]
+    public void Materialize_does_not_replace_destination_created_after_initial_check()
+    {
+        using var files = new TemporaryFiles();
+        var input = files.Write("input.json", "{ \"Value\": 1 }");
+        var output = files.PathFor("effective.json");
+        const string concurrentContent = "{ \"Value\": 99 }";
+        var hookInvoked = false;
+
+        var exception = Assert.Throws<MaterializerException>(() => new ConfigurationMaterializer(() =>
+        {
+            hookInvoked = true;
+            File.WriteAllText(output, concurrentContent);
+        }).Materialize(
+            new MaterializerOptions
+            {
+                InputFiles = [input],
+                OutputFile = output
+            }));
+
+        Assert.True(hookInvoked);
+        Assert.Equal("Die Ausgabedatei existiert bereits. Verwende --overwrite, um sie zu ersetzen.", exception.Message);
+        Assert.Equal(concurrentContent, File.ReadAllText(output));
+        Assert.Equal(
+            ["effective.json", "input.json"],
+            Directory.EnumerateFileSystemEntries(files.Directory)
+                .Select(path => Path.GetFileName(path)!)
+                .OrderBy(name => name, StringComparer.Ordinal)
+                .ToArray());
+    }
+
+    [Fact]
+    public void Materialize_replaces_destination_created_after_initial_check_when_overwrite_is_allowed()
+    {
+        using var files = new TemporaryFiles();
+        var input = files.Write("input.json", "{ \"Value\": 1 }");
+        var output = files.PathFor("effective.json");
+        var hookInvoked = false;
+
+        var result = new ConfigurationMaterializer(() =>
+        {
+            hookInvoked = true;
+            File.WriteAllText(output, "{ \"Value\": 99 }");
+        }).Materialize(
+            new MaterializerOptions
+            {
+                InputFiles = [input],
+                OutputFile = output,
+                Overwrite = true
+            });
+
+        Assert.True(hookInvoked);
+        Assert.True(result.WasWritten);
+        Assert.Equal("1", new ConfigurationBuilder().AddJsonFile(output).Build()["Value"]);
+        Assert.Equal(
+            ["effective.json", "input.json"],
+            Directory.EnumerateFileSystemEntries(files.Directory)
+                .Select(path => Path.GetFileName(path)!)
+                .OrderBy(name => name, StringComparer.Ordinal)
+                .ToArray());
+    }
+
+    [Fact]
     public void Materialize_preserves_existing_unix_mode_when_overwriting()
     {
         if (OperatingSystem.IsWindows())
