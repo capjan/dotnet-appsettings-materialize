@@ -47,7 +47,7 @@ Useful options are:
 - `--no-sort` keeps the discovered property order instead of sorting properties.
 - `--verbose` prints file names, key counts, and a SHA-256 hash, never configuration values.
 
-The output is written atomically through a temporary file in the destination directory. New output files use owner-only (`0600`) permissions on Unix and a private ACL for the current user, SYSTEM, and local administrators on Windows. Overwriting an existing file preserves its Unix mode and ACL on macOS and Linux, or its ACL on Windows. Inputs are never deleted automatically. The convention form may intentionally replace the base `appsettings.json` when `--overwrite` is explicit; a later environment input may not be used as the output path.
+The output is written atomically through a temporary file on the destination filesystem. On Unix, the file is written with owner-only (`0600`) permissions inside a private temporary directory; an existing file's ACL and mode are applied immediately before replacement. New output files use owner-only (`0600`) permissions on Unix and a private ACL for the current user, SYSTEM, and local administrators on Windows. Overwriting an existing file preserves its Unix mode and ACL on macOS and Linux, or its ACL on Windows. Inputs are never deleted automatically. The convention form may intentionally replace the base `appsettings.json` when `--overwrite` is explicit; a later environment input may not be used as the output path.
 
 ## Semantics
 
