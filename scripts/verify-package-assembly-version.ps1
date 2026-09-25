@@ -56,19 +56,17 @@ $extractDirectory = Join-Path ([System.IO.Path]::GetTempPath()) ([guid]::NewGuid
 New-Item -ItemType Directory -Path $extractDirectory | Out-Null
 
 try {
-    & unzip -q $packages[0].FullName -d $extractDirectory
-    if ($LASTEXITCODE -ne 0) {
-        throw "Could not extract package '$($packages[0].FullName)'."
-    }
+    Add-Type -AssemblyName System.IO.Compression.ZipFile
+    [System.IO.Compression.ZipFile]::ExtractToDirectory($packages[0].FullName, $extractDirectory)
 
     $assemblyFile = Get-ChildItem (Join-Path $extractDirectory 'tools') -Filter 'AppSettings.Materializer.Cli.dll' -Recurse | Select-Object -First 1
     if ($null -eq $assemblyFile) {
         throw 'Packaged CLI assembly was not found.'
     }
 
-    $assembly = [System.Reflection.Assembly]::LoadFile($assemblyFile.FullName)
-    $fileVersion = $assembly.GetCustomAttributes([System.Reflection.AssemblyFileVersionAttribute], $false)[0].Version
-    $informationalVersion = $assembly.GetCustomAttributes([System.Reflection.AssemblyInformationalVersionAttribute], $false)[0].InformationalVersion
+    $fileVersionInfo = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($assemblyFile.FullName)
+    $fileVersion = $fileVersionInfo.FileVersion
+    $informationalVersion = $fileVersionInfo.ProductVersion
     $fileVersionBase = ($Version -split '[-+]')[0]
     $expectedFileVersion = "$fileVersionBase.0"
 
