@@ -33,8 +33,11 @@ jobs:
         with:
           global-json-file: global.json
       - run: dotnet restore AppSettings.Materializer.sln
-      - run: dotnet build AppSettings.Materializer.sln --configuration Release --no-restore
-      - run: dotnet pack src/AppSettings.Materializer.Cli/AppSettings.Materializer.Cli.csproj --configuration Release --no-build -p:Version=1.0.0 -o ./artifacts
-      - run: dotnet tool install --global dotnet-appsettings-materialize --version 1.0.0 --source ./artifacts
+      - run: dotnet build AppSettings.Materializer.sln --configuration Release --no-restore -p:Version=9.9.9
+      - run: dotnet pack src/AppSettings.Materializer.Cli/AppSettings.Materializer.Cli.csproj --configuration Release --no-build -p:Version=9.9.9 -o ./artifacts
+      - name: Verify packaged assembly versions
+        shell: pwsh
+        run: ./scripts/verify-package-assembly-version.ps1 -PackagePath "./artifacts/*.nupkg" -Version "9.9.9"
+      - run: dotnet tool install --global dotnet-appsettings-materialize --version 9.9.9 --source ./artifacts
       - run: appsettings-materialize --help
       - run: appsettings-materialize merge --directory ./samples/stage --environment Stage --output ./artifacts/stage.effective.json
