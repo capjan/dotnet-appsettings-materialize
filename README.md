@@ -96,7 +96,7 @@ GitHub Actions:
 
 ```yaml
 - name: Install materializer
-  run: dotnet tool install --global dotnet-appsettings-materialize --version 1.0.0
+  run: dotnet tool install --global dotnet-appsettings-materialize --version 1.0.1
 - name: Materialize integration settings
   run: >-
     appsettings-materialize merge
@@ -112,7 +112,7 @@ GitLab CI:
 materialize:
   image: mcr.microsoft.com/dotnet/sdk:10.0
   script:
-    - dotnet tool install --global dotnet-appsettings-materialize --version 1.0.0
+    - dotnet tool install --global dotnet-appsettings-materialize --version 1.0.1
     - export PATH="$PATH:$HOME/.dotnet/tools"
     - appsettings-materialize merge --input appsettings.json --input appsettings.Stage.json --output appsettings.effective.json
 ```
@@ -147,7 +147,7 @@ dotnet restore
 dotnet build -c Release --no-restore
 dotnet test -c Release --no-build -m:1
 dotnet pack src/AppSettings.Materializer.Cli/AppSettings.Materializer.Cli.csproj \
-  -c Release --no-build -p:Version=1.0.0 -o ./artifacts
+  -c Release --no-build -p:Version=1.0.1 -o ./artifacts
 ```
 
 ## License
