@@ -1,5 +1,7 @@
+using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
 using System.Text.Json;
 using AppSettings.Materializer;
 using Microsoft.Extensions.Configuration;
@@ -10,6 +12,8 @@ namespace AppSettings.Materializer.Tests;
 public sealed class ConfigurationMaterializerTests
 {
     private const string LinuxAclAttribute = "system.posix_acl_access";
+    private const string LinuxDefaultAclAttribute = "system.posix_acl_default";
+    private const int LinuxErrorNoData = 61;
 
     [Fact]
     public void Materialize_preserves_configuration_values_and_array_inheritance()
@@ -274,6 +278,95 @@ public sealed class ConfigurationMaterializerTests
         Assert.Equal(expectedAcl, ReadLinuxAcl(output));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Materialize_does_not_inherit_linux_parent_default_acl(bool overwrite)
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        using var files = new TemporaryFiles();
+        var input = files.Write("input.json", "{ \"Value\": 1 }");
+        var output = files.PathFor("effective.json");
+        if (overwrite)
+        {
+            File.WriteAllText(output, "{ \"Value\": 99 }");
+            File.SetUnixFileMode(output, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+
+        SetLinuxAcl(
+            files.Directory,
+            LinuxDefaultAclAttribute,
+            CreateLinuxAcl(
+                (0x01, 0x07, uint.MaxValue),
+                (0x04, 0x00, uint.MaxValue),
+                (0x08, 0x04, 12345),
+                (0x10, 0x04, uint.MaxValue),
+                (0x20, 0x00, uint.MaxValue)));
+
+        new ConfigurationMaterializer().Materialize(
+            new MaterializerOptions
+            {
+                InputFiles = [input],
+                OutputFile = output,
+                Overwrite = overwrite
+            });
+
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(output));
+        AssertNoLinuxAcl(output, LinuxAclAttribute);
+        Assert.Empty(Directory.GetDirectories(files.Directory, ".appsettings-materializer-*.tmp"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Materialize_preserves_setgid_parent_group_on_linux(bool overwrite)
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        var effectiveGroup = LinuxGetEffectiveGroupId();
+        var supplementaryGroups = GetLinuxSupplementaryGroupIds();
+        var targetGroup = supplementaryGroups
+            .Where(group => group != effectiveGroup)
+            .Select(group => (uint?)group)
+            .FirstOrDefault();
+        if (targetGroup is null)
+        {
+            return;
+        }
+
+        using var files = new TemporaryFiles();
+        var input = files.Write("input.json", "{ \"Value\": 1 }");
+        var output = files.PathFor("effective.json");
+        if (overwrite)
+        {
+            File.WriteAllText(output, "{ \"Value\": 99 }");
+            File.SetUnixFileMode(output, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead);
+        }
+
+        Assert.Equal(0, LinuxChown(files.Directory, uint.MaxValue, targetGroup.Value));
+        File.SetUnixFileMode(
+            files.Directory,
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute | UnixFileMode.SetGroup);
+
+        new ConfigurationMaterializer().Materialize(
+            new MaterializerOptions
+            {
+                InputFiles = [input],
+                OutputFile = output,
+                Overwrite = overwrite
+            });
+
+        Assert.Equal(targetGroup.Value, GetLinuxFileGroup(output));
+        Assert.Empty(Directory.GetDirectories(files.Directory, ".appsettings-materializer-*.tmp"));
+    }
+
     [Fact]
     public void Materialize_creates_new_unix_output_as_owner_only()
     {
@@ -339,8 +432,10 @@ public sealed class ConfigurationMaterializerTests
         Assert.Contains("everyone allow read", listing, StringComparison.OrdinalIgnoreCase);
     }
 
-    [Fact]
-    public void Materialize_does_not_inherit_macos_directory_acl_when_overwriting()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Materialize_does_not_inherit_macos_directory_acl(bool overwrite)
     {
         if (!OperatingSystem.IsMacOS())
         {
@@ -349,9 +444,13 @@ public sealed class ConfigurationMaterializerTests
 
         using var files = new TemporaryFiles();
         var input = files.Write("input.json", "{ \"Value\": 1 }");
-        var output = files.Write("effective.json", "{ \"Value\": 99 }");
-        File.SetUnixFileMode(output, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-        Assert.DoesNotContain("everyone", ListMacAcl(output), StringComparison.OrdinalIgnoreCase);
+        var output = files.PathFor("effective.json");
+        if (overwrite)
+        {
+            File.WriteAllText(output, "{ \"Value\": 99 }");
+            File.SetUnixFileMode(output, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            Assert.DoesNotContain("everyone", ListMacAcl(output), StringComparison.OrdinalIgnoreCase);
+        }
 
         var directory = Path.GetDirectoryName(output)!;
         using (var addAcl = Process.Start(new ProcessStartInfo("/bin/chmod")
@@ -369,11 +468,12 @@ public sealed class ConfigurationMaterializerTests
             {
                 InputFiles = [input],
                 OutputFile = output,
-                Overwrite = true
+                Overwrite = overwrite
             });
 
         Assert.DoesNotContain("everyone", ListMacAcl(output), StringComparison.OrdinalIgnoreCase);
         Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(output));
+        Assert.Empty(Directory.GetDirectories(files.Directory, ".appsettings-materializer-*.tmp"));
     }
 
     private static string ListMacAcl(string path)
@@ -494,6 +594,59 @@ public sealed class ConfigurationMaterializerTests
         Assert.Equal((nint)acl.Length, LinuxGetXAttr(path, LinuxAclAttribute, acl, (nuint)acl.Length));
         return acl;
     }
+
+    private static void SetLinuxAcl(string path, string attribute, byte[] acl)
+    {
+        Assert.Equal(0, LinuxSetXAttr(path, attribute, acl, (nuint)acl.Length, 0));
+    }
+
+    private static void AssertNoLinuxAcl(string path, string attribute)
+    {
+        Assert.Equal((nint)(-1), LinuxGetXAttr(path, attribute, IntPtr.Zero, 0));
+        Assert.Equal(LinuxErrorNoData, Marshal.GetLastPInvokeError());
+    }
+
+    [SupportedOSPlatform("linux")]
+    private static uint[] GetLinuxSupplementaryGroupIds()
+    {
+        var count = LinuxGetSupplementaryGroupIds(0, null);
+        Assert.True(count >= 0, $"Supplementary groups could not be read: errno {Marshal.GetLastPInvokeError()}.");
+        var groups = new uint[count];
+        Assert.Equal(count, LinuxGetSupplementaryGroupIds(count, groups));
+        return groups;
+    }
+
+    [SupportedOSPlatform("linux")]
+    private static uint GetLinuxFileGroup(string path)
+    {
+        var stat = new byte[256];
+        Assert.Equal(0, LinuxStatx(-100, path, 0, 0x10, stat));
+        return BinaryPrimitives.ReadUInt32LittleEndian(stat.AsSpan(24, 4));
+    }
+
+    [SupportedOSPlatform("linux")]
+    [DllImport("libc", EntryPoint = "getegid", SetLastError = true)]
+    private static extern uint LinuxGetEffectiveGroupId();
+
+    [SupportedOSPlatform("linux")]
+    [DllImport("libc", EntryPoint = "getgroups", SetLastError = true)]
+    private static extern int LinuxGetSupplementaryGroupIds(int size, [Out] uint[]? groups);
+
+    [SupportedOSPlatform("linux")]
+    [DllImport("libc", EntryPoint = "chown", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
+    private static extern int LinuxChown(
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string path,
+        uint owner,
+        uint group);
+
+    [SupportedOSPlatform("linux")]
+    [DllImport("libc", EntryPoint = "statx", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
+    private static extern int LinuxStatx(
+        int directoryFileDescriptor,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string path,
+        int flags,
+        uint mask,
+        [Out] byte[] stat);
 
     [DllImport("libc", EntryPoint = "setxattr", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
     private static extern int LinuxSetXAttr(
