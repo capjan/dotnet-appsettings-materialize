@@ -566,18 +566,25 @@ public sealed class ConfigurationMaterializer
                 stream.Flush(flushToDisk: true);
             }
 
-            beforeAtomicMove?.Invoke();
+            try
+            {
+                beforeAtomicMove?.Invoke();
 
-            if (OperatingSystem.IsWindows() && overwrite && File.Exists(outputFile))
-            {
-                File.Replace(temporaryFile, outputFile, destinationBackupFileName: null);
+                if (OperatingSystem.IsWindows() && overwrite && File.Exists(outputFile))
+                {
+                    File.Replace(temporaryFile, outputFile, destinationBackupFileName: null);
+                }
+                else
+                {
+                    // File.Replace is reserved for an existing destination when
+                    // overwrite is true. Other cases use File.Move with the caller's
+                    // overwrite flag; when false, it atomically fails if the target exists.
+                    File.Move(temporaryFile, outputFile, overwrite);
+                }
             }
-            else
+            catch (IOException exception) when (!overwrite && File.Exists(outputFile))
             {
-                // File.Replace is reserved for an existing destination when
-                // overwrite is true. Other cases use File.Move with the caller's
-                // overwrite flag; when false, it atomically fails if the target exists.
-                File.Move(temporaryFile, outputFile, overwrite);
+                throw new MaterializerException("Die Ausgabedatei existiert bereits. Verwende --overwrite, um sie zu ersetzen.", exception);
             }
         }
         catch (IOException exception)

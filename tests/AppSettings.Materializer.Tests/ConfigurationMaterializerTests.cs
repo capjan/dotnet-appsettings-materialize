@@ -241,12 +241,45 @@ public sealed class ConfigurationMaterializerTests
             }));
 
         Assert.True(hookInvoked);
-        Assert.NotEmpty(exception.Message);
+        Assert.Equal("Die Ausgabedatei existiert bereits. Verwende --overwrite, um sie zu ersetzen.", exception.Message);
         Assert.Equal(concurrentContent, File.ReadAllText(output));
-        Assert.DoesNotContain(
-            Directory.EnumerateFiles(files.Directory),
-            path => Path.GetFileName(path).StartsWith(".effective.json.", StringComparison.Ordinal) &&
-                path.EndsWith(".tmp", StringComparison.Ordinal));
+        Assert.Equal(
+            ["effective.json", "input.json"],
+            Directory.EnumerateFileSystemEntries(files.Directory)
+                .Select(path => Path.GetFileName(path)!)
+                .OrderBy(name => name, StringComparer.Ordinal)
+                .ToArray());
+    }
+
+    [Fact]
+    public void Materialize_replaces_destination_created_after_initial_check_when_overwrite_is_allowed()
+    {
+        using var files = new TemporaryFiles();
+        var input = files.Write("input.json", "{ \"Value\": 1 }");
+        var output = files.PathFor("effective.json");
+        var hookInvoked = false;
+
+        var result = new ConfigurationMaterializer(() =>
+        {
+            hookInvoked = true;
+            File.WriteAllText(output, "{ \"Value\": 99 }");
+        }).Materialize(
+            new MaterializerOptions
+            {
+                InputFiles = [input],
+                OutputFile = output,
+                Overwrite = true
+            });
+
+        Assert.True(hookInvoked);
+        Assert.True(result.WasWritten);
+        Assert.Equal("1", new ConfigurationBuilder().AddJsonFile(output).Build()["Value"]);
+        Assert.Equal(
+            ["effective.json", "input.json"],
+            Directory.EnumerateFileSystemEntries(files.Directory)
+                .Select(path => Path.GetFileName(path)!)
+                .OrderBy(name => name, StringComparer.Ordinal)
+                .ToArray());
     }
 
     [Fact]
