@@ -551,12 +551,15 @@ public sealed class ConfigurationMaterializer
                 stream.Flush(flushToDisk: true);
             }
 
-            if (OperatingSystem.IsWindows() && File.Exists(outputFile))
+            if (OperatingSystem.IsWindows() && overwrite && File.Exists(outputFile))
             {
                 File.Replace(temporaryFile, outputFile, destinationBackupFileName: null);
             }
             else
             {
+                // Keep the no-overwrite operation atomic. In particular, do not
+                // turn a destination that appeared while writing the temporary
+                // file into an implicit replacement on Windows.
                 File.Move(temporaryFile, outputFile, overwrite);
             }
         }
