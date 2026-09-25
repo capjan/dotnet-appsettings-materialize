@@ -221,6 +221,35 @@ public sealed class ConfigurationMaterializerTests
     }
 
     [Fact]
+    public void Materialize_does_not_replace_destination_created_after_initial_check()
+    {
+        using var files = new TemporaryFiles();
+        var input = files.Write("input.json", "{ \"Value\": 1 }");
+        var output = files.PathFor("effective.json");
+        const string concurrentContent = "{ \"Value\": 99 }";
+        var hookInvoked = false;
+
+        var exception = Assert.Throws<MaterializerException>(() => new ConfigurationMaterializer(() =>
+        {
+            hookInvoked = true;
+            File.WriteAllText(output, concurrentContent);
+        }).Materialize(
+            new MaterializerOptions
+            {
+                InputFiles = [input],
+                OutputFile = output
+            }));
+
+        Assert.True(hookInvoked);
+        Assert.NotEmpty(exception.Message);
+        Assert.Equal(concurrentContent, File.ReadAllText(output));
+        Assert.DoesNotContain(
+            Directory.EnumerateFiles(files.Directory),
+            path => Path.GetFileName(path).StartsWith(".effective.json.", StringComparison.Ordinal) &&
+                path.EndsWith(".tmp", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void Materialize_preserves_existing_unix_mode_when_overwriting()
     {
         if (OperatingSystem.IsWindows())
